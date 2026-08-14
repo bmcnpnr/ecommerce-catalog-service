@@ -2,6 +2,15 @@ server:
   port: 8083
 
 spring:
+  cloud:
+    loadbalancer:
+      cache:
+        ttl: 5s
+      # Without eager-load, the ServiceInstanceListSupplier for a Feign client is
+      # built lazily on first use and starts empty, so the very first call to a
+      # peer fails with "Load balancer does not contain an instance".
+      eager-load:
+        clients: product-service
   application:
     name: catalog-service
   datasource:
@@ -25,6 +34,11 @@ eureka:
   client:
     service-url:
       defaultZone: ${EUREKA_CLIENT_SERVICEURL_DEFAULTZONE:http://localhost:8761/eureka/}
+    # Defaults are 30s registry fetch + a 35s LoadBalancer instance cache, so a
+    # freshly (re)started peer stays invisible for over a minute and the first
+    # calls fail with "Load balancer does not contain an instance". Short TTLs
+    # suit a compose stack where containers restart often.
+    registry-fetch-interval-seconds: 5
   instance:
     prefer-ip-address: true
 
@@ -37,7 +51,7 @@ management:
     health:
       show-details: always
     prometheus:
-      enabled: true
+      access: unrestricted
   metrics:
     tags:
       application: ${spring.application.name}
@@ -50,9 +64,15 @@ management:
   tracing:
     sampling:
       probability: ${TRACING_SAMPLING_PROBABILITY:1.0}
-  otlp:
+  opentelemetry:
     tracing:
-      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://tempo:4318}/v1/traces
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://tempo:4318}/v1/traces
+  otlp:
+    metrics:
+      export:
+        enabled: false
 
 springdoc:
   api-docs:
