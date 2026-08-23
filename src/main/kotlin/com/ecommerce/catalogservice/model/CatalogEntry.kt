@@ -1,52 +1,76 @@
 package com.ecommerce.catalogservice.model
 
-import jakarta.persistence.*
+import org.springframework.data.annotation.Id
+import org.springframework.data.annotation.Version
+import org.springframework.data.mongodb.core.mapping.Document
 import java.math.BigDecimal
 import java.time.LocalDateTime
+import java.time.temporal.ChronoUnit
 
-@Entity
-@Table(name = "catalog_entries")
+/**
+ * One catalog entry per product: a denormalised, read-optimised projection of
+ * what product-service knows, plus the merchandising fields (featured, image)
+ * that only the catalog owns.
+ *
+ * Stored as a MongoDB document. The product id *is* the document `_id` — a
+ * product has exactly one entry, so the natural key is the primary key and
+ * there can never be two entries for one product. Writes are version-checked
+ * (see [version]); the service retries the idempotent sync on a concurrent
+ * write and surfaces a concurrent PATCH as 409.
+ *
+ * Secondary and text indexes are created at startup
+ * by [com.ecommerce.catalogservice.config.CatalogCollectionInitializer], which also
+ * backfills [version] on documents written before optimistic locking existed.
+ */
+@Document(collection = CatalogEntry.COLLECTION)
 class CatalogEntry(
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    val id: Long = 0,
+    val productId: Long,
 
-    @Column(name = "product_id", nullable = false, unique = true)
-    var productId: Long,
-
-    @Column(name = "product_sku", nullable = false)
     var productSku: String,
 
-    @Column(name = "product_name", nullable = false)
     var productName: String,
 
-    @Column(columnDefinition = "TEXT")
     var description: String? = null,
 
-    @Column(nullable = false, precision = 19, scale = 2)
+    /** Persisted as Decimal128 (see spring.data.mongodb.representation.big-decimal). */
     var price: BigDecimal,
 
     var brand: String? = null,
 
-    @Column(name = "category_id")
     var categoryId: Long? = null,
 
-    @Column(name = "category_name")
     var categoryName: String? = null,
 
-    @Column(nullable = false)
     var featured: Boolean = false,
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "stock_status", nullable = false)
     var stockStatus: StockStatus = StockStatus.AVAILABLE,
 
-    @Column(name = "image_url")
     var imageUrl: String? = null,
 
-    @Column(name = "created_at", nullable = false, updatable = false)
-    val createdAt: LocalDateTime = LocalDateTime.now(),
+    val createdAt: LocalDateTime = now(),
 
-    @Column(name = "updated_at", nullable = false)
-    var updatedAt: LocalDateTime = LocalDateTime.now()
-)
+    var updatedAt: LocalDateTime = now(),
+
+    /**
+     * Optimistic lock. Spring Data increments it on every save and rejects a
+     * save whose in-memory version is behind the stored one with
+     * OptimisticLockingFailureException, so two concurrent PATCHes can no
+     * longer silently overwrite each other (the loser gets 409). Nullable on
+     * purpose: Spring Data treats a null version as "new document" and a
+     * non-null one as "update with version check".
+     */
+    @Version
+    var version: Long? = null
+) {
+    companion object {
+        const val COLLECTION = "catalog_entries"
+
+        /**
+         * BSON dates carry millisecond precision. Truncating here keeps the
+         * value we hand back straight after a save identical to the one a
+         * later read returns, instead of differing in the sub-millisecond digits.
+         */
+        fun now(): LocalDateTime = LocalDateTime.now().truncatedTo(ChronoUnit.MILLIS)
+    }
+}

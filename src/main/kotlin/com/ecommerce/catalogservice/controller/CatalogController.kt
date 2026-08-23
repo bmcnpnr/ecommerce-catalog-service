@@ -17,7 +17,11 @@ import org.springframework.web.bind.annotation.*
 class CatalogController(private val catalogService: CatalogService) {
 
     @GetMapping("/search")
-    @Operation(summary = "Search catalog by product name")
+    @Operation(
+        summary = "Search catalog",
+        description = "Relevance-ranked full-text search over product name, brand and description; " +
+            "falls back to a case-insensitive name substring match for partial words."
+    )
     fun search(
         @RequestParam q: String,
         @RequestParam(defaultValue = "0") page: Int,
@@ -60,7 +64,11 @@ class CatalogController(private val catalogService: CatalogService) {
     }
 
     @PatchMapping("/product/{productId}")
-    @Operation(summary = "Update catalog entry metadata (Admin)", security = [SecurityRequirement(name = "bearerAuth")])
+    @Operation(
+        summary = "Update catalog entry metadata (Admin)",
+        description = "Partial update of the catalog-owned fields. Answers 409 if the entry was modified concurrently.",
+        security = [SecurityRequirement(name = "bearerAuth")]
+    )
     fun update(
         @PathVariable productId: Long,
         @RequestBody request: UpdateCatalogEntryRequest

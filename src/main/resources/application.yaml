@@ -13,22 +13,34 @@ spring:
         clients: product-service
   application:
     name: catalog-service
-  datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5435/catalogdb}
+  # Storage is MongoDB, not Postgres: a catalog entry is a denormalised read
+  # model of one product (no joins, no cross-document invariants), and every
+  # query is a single-collection lookup by product id, category, featured flag
+  # or name. The env var names deliberately mirror the other services:
+  # DB_USERNAME / DB_PASSWORD carry the credentials and SPRING_MONGODB_HOST the
+  # address, the way SPRING_DATASOURCE_URL does for the JPA services. Setting
+  # SPRING_MONGODB_URI overrides all of these (Boot ignores host/port/credentials
+  # when a uri is present). Spring Boot 4 moved these keys from
+  # spring.data.mongodb.* to spring.mongodb.*; the old names still bind but log
+  # a deprecation warning.
+  mongodb:
+    host: ${SPRING_MONGODB_HOST:localhost}
+    port: ${SPRING_MONGODB_PORT:27017}
+    database: ${SPRING_MONGODB_DATABASE:catalogdb}
     username: ${DB_USERNAME:cataloguser}
     password: ${DB_PASSWORD:catalogpass}
-    driver-class-name: org.postgresql.Driver
-  jpa:
-    hibernate:
-      ddl-auto: validate
-    show-sql: false
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: true
-  flyway:
-    enabled: true
-    locations: classpath:db/migration
+    # The container's MONGO_INITDB_ROOT_* user is created in the admin database.
+    authentication-database: admin
+  data:
+    mongodb:
+      # Spring Data's historical default stores BigDecimal as a *string*, which
+      # sorts lexically and defeats range queries on price. Decimal128 is the
+      # exact numeric type; it round-trips DECIMAL(19,2) values losslessly.
+      representation:
+        big-decimal: decimal128
+      # Indexes are created explicitly by CatalogCollectionInitializer (the role the
+      # Flyway migration used to play) rather than on mapping-context startup.
+      auto-index-creation: false
 
 eureka:
   client:
