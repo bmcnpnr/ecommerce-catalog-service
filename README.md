@@ -66,3 +66,9 @@ docker build -t catalog-service:0.0.1-SNAPSHOT -f docker/Dockerfile .
 docker tag catalog-service:0.0.1-SNAPSHOT bmcnpnr/ecommerce-catalog-service:latest
 docker push bmcnpnr/ecommerce-catalog-service:latest
 ```
+
+## Contract tests (Pact)
+
+- `src/test/kotlin/.../contract/ProductServiceConsumerPactTest` — **consumer** of product-service (Feign): `GET /api/v1/products/{id}`, `GET /api/v1/categories`, 404 — driven through `CatalogService.syncFromProductService` with the real Feign client and `FeignConfig`. Writes `target/pacts/catalog-service-product-service.json`, verified in product-service.
+
+Run them alone with `mvn test -Dtest='*PactTest'`; they are ordinary Surefire tests, so `mvn verify` and CI run them too. Regenerate and redistribute pacts across repositories with `ecommerce-platform/sync-pacts.sh` (see its README, "Contract tests").
