@@ -1,9 +1,21 @@
 # ecommerce-catalog-service
 
 Kotlin / Spring Boot read model for the storefront catalog. Each catalog entry
-is a denormalised projection of one product from `product-service` (pulled over
-Feign by `POST /api/v1/catalog/sync/{productId}`) plus the merchandising fields
-only the catalog owns (`featured`, `imageUrl`, an overridable `price`).
+is a denormalised projection of one product from `product-service`, pulled over
+Feign by `POST /api/v1/catalog/sync/{productId}`. Two merchandising fields are
+owned by the catalog alone, `featured` and `imageUrl`, and both survive a
+re-sync. `price` can be set with `PATCH /api/v1/catalog/product/{productId}`,
+but the next sync overwrites it with product-service's price. Nothing syncs
+automatically: there is no event consumer and no scheduler.
+
+| | |
+|---|---|
+| Port | 8083 |
+| Gateway routes | `/api/v1/catalog/**` (`GET` is public) |
+| Docs | [Deep dive](https://github.com/bmcnpnr/ecommerce-platform/blob/develop/docs/services/catalog-service.md) · [API reference](https://github.com/bmcnpnr/ecommerce-platform/blob/develop/docs/api/catalog-service.md) · [ADR-003: why MongoDB](https://github.com/bmcnpnr/ecommerce-platform/blob/develop/docs/adr/ADR-003-mongodb-catalog-read-model.md) · Swagger UI at http://localhost:8080/swagger-ui.html (`catalog-service`) |
+
+With the repositories checked out side by side, the same docs are in
+`../ecommerce-platform/docs/`.
 
 ## Storage: MongoDB
 
