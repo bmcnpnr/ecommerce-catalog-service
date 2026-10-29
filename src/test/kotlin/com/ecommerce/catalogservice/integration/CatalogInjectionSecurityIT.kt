@@ -55,7 +55,7 @@ class CatalogInjectionSecurityIT : AbstractCatalogIT() {
         for (payload in operatorPayloads) {
             val response = search(payload)
             assertEquals(200, response.status, "q=$payload -> ${response.body}")
-            val hits = response.json["content"].map { it["productName"].asString() }
+            val hits = Iterable { response.json["content"].iterator() }.map { it["productName"].asString() }
             assertTrue(hits.size < 6, "q=$payload returned the whole catalog: $hits")
         }
         assertEquals(6, repository.count())
