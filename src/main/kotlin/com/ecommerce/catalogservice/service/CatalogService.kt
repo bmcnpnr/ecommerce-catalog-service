@@ -125,7 +125,7 @@ class CatalogService(
             .orElseThrow { CatalogEntryNotFoundException("Catalog entry not found for product $productId") }
 
         request.featured?.let { entry.featured = it }
-        request.imageUrl?.let { entry.imageUrl = it }
+        request.imageUrl?.let { entry.imageUrl = it.ifEmpty { null } }
         request.price?.let { entry.price = it.toCatalogPrice() }
         entry.updatedAt = CatalogEntry.now()
 

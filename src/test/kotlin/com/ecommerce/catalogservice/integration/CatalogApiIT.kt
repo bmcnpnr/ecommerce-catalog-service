@@ -126,7 +126,7 @@ class CatalogApiIT : AbstractCatalogIT() {
         val response = call("GET", "/api/v1/catalog/category/6")
 
         assertEquals(200, response.status)
-        assertEquals(listOf(22L), response.json.map { it["productId"].asLong() })
+        assertEquals(listOf(22L), response.json.values().map { it["productId"].asLong() })
         assertEquals("Books", response.json[0]["categoryName"].asString())
     }
 
@@ -136,13 +136,13 @@ class CatalogApiIT : AbstractCatalogIT() {
         stubProduct(31); stubProduct(32)
         sync(31); sync(32)
 
-        val patch = call("PATCH", "/api/v1/catalog/product/32", """{"featured":true,"price":12.345}""")
+        val patch = call("PATCH", "/api/v1/catalog/product/32", """{"featured":true,"price":12.35}""")
         assertEquals(200, patch.status, patch.body)
         assertPrice("12.35", patch.json["price"])
-        assertEquals(BigDecimal("12.35"), repository.findById(32L).get().price, "PATCH prices are rounded to cents too")
+        assertEquals(BigDecimal("12.35"), repository.findById(32L).get().price, "PATCH prices are stored in cents")
 
         val featured = call("GET", "/api/v1/catalog/featured").json
-        assertEquals(listOf(32L), featured.map { it["productId"].asLong() })
+        assertEquals(listOf(32L), featured.values().map { it["productId"].asLong() })
     }
 
     @Test
@@ -163,12 +163,12 @@ class CatalogApiIT : AbstractCatalogIT() {
 
         val ranked = call("GET", "/api/v1/catalog/search?q=wireless").json
         assertEquals(
-            listOf(41L, 42L), ranked["content"].map { it["productId"].asLong() },
+            listOf(41L, 42L), ranked["content"].values().map { it["productId"].asLong() },
             "a name hit (weight 10) outranks a description hit (weight 1)"
         )
 
         val partial = call("GET", "/api/v1/catalog/search?q=wirel").json
-        assertEquals(listOf(41L), partial["content"].map { it["productId"].asLong() }, "substring fallback on the name")
+        assertEquals(listOf(41L), partial["content"].values().map { it["productId"].asLong() }, "substring fallback on the name")
 
         val none = call("GET", "/api/v1/catalog/search?q=nothing-matches-this").json
         assertEquals(0, none["totalElements"].asInt())

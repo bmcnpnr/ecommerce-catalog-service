@@ -6,6 +6,10 @@ import com.ecommerce.catalogservice.service.CatalogService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.security.SecurityRequirement
 import io.swagger.v3.oas.annotations.tags.Tag
+import com.ecommerce.catalogservice.exception.InvalidRequestException
+import com.ecommerce.catalogservice.security.Authorization
+import jakarta.validation.Valid
+import jakarta.validation.constraints.Max
 import jakarta.validation.constraints.Min
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.PageRequest
@@ -26,18 +30,19 @@ class CatalogController(private val catalogService: CatalogService) {
     fun search(
         @RequestParam q: String,
         @RequestParam(defaultValue = "0") @Min(0) page: Int,
-        @RequestParam(defaultValue = "20") @Min(1) size: Int
+        @RequestParam(defaultValue = "20") @Min(1) @Max(100) size: Int
     ): ResponseEntity<Page<CatalogEntryDTO>> {
-        return ResponseEntity.ok(catalogService.searchCatalog(q, PageRequest.of(page, size)))
+        if (q.indexOf('\u0000') >= 0) throw InvalidRequestException("Invalid value for parameter 'q'")
+        return ResponseEntity.ok(catalogService.searchCatalog(q, pageRequest(page, size)))
     }
 
     @GetMapping
     @Operation(summary = "Browse all catalog entries")
     fun browse(
         @RequestParam(defaultValue = "0") @Min(0) page: Int,
-        @RequestParam(defaultValue = "20") @Min(1) size: Int
+        @RequestParam(defaultValue = "20") @Min(1) @Max(100) size: Int
     ): ResponseEntity<Page<CatalogEntryDTO>> {
-        return ResponseEntity.ok(catalogService.getAllEntries(PageRequest.of(page, size)))
+        return ResponseEntity.ok(catalogService.getAllEntries(pageRequest(page, size)))
     }
 
     @GetMapping("/category/{categoryId}")
@@ -60,7 +65,12 @@ class CatalogController(private val catalogService: CatalogService) {
 
     @PostMapping("/sync/{productId}")
     @Operation(summary = "Sync catalog entry from product service (Admin)", security = [SecurityRequirement(name = "bearerAuth")])
-    fun sync(@PathVariable productId: Long): ResponseEntity<CatalogEntryDTO> {
+    fun sync(
+        @PathVariable productId: Long,
+        @RequestHeader(Authorization.USERNAME_HEADER, required = false) username: String?,
+        @RequestHeader(Authorization.ROLE_HEADER, required = false) role: String?
+    ): ResponseEntity<CatalogEntryDTO> {
+        Authorization.requireAdmin(username, role)
         return ResponseEntity.ok(catalogService.syncFromProductService(productId))
     }
 
@@ -72,8 +82,21 @@ class CatalogController(private val catalogService: CatalogService) {
     )
     fun update(
         @PathVariable productId: Long,
-        @RequestBody request: UpdateCatalogEntryRequest
+        @RequestHeader(Authorization.USERNAME_HEADER, required = false) username: String?,
+        @RequestHeader(Authorization.ROLE_HEADER, required = false) role: String?,
+        @Valid @RequestBody request: UpdateCatalogEntryRequest
     ): ResponseEntity<CatalogEntryDTO> {
+        Authorization.requireAdmin(username, role)
         return ResponseEntity.ok(catalogService.updateCatalogEntry(productId, request))
+    }
+
+    private fun pageRequest(page: Int, size: Int): PageRequest {
+        if (page < 0 || size < 1 || size > MAX_PAGE_SIZE) throw InvalidRequestException("Page size must be between 1 and $MAX_PAGE_SIZE")
+        if (page.toLong() * size > Int.MAX_VALUE) throw InvalidRequestException("Page out of range")
+        return PageRequest.of(page, size)
+    }
+
+    private companion object {
+        const val MAX_PAGE_SIZE = 100
     }
 }

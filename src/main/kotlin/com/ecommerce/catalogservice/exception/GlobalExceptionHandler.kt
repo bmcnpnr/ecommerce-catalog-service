@@ -28,7 +28,7 @@ class GlobalExceptionHandler {
 
     @ExceptionHandler(CatalogEntryNotFoundException::class)
     fun handleNotFound(ex: CatalogEntryNotFoundException, request: HttpServletRequest): ResponseEntity<ErrorResponse> {
-        log.warn("Not found: {}", ex.message)
+        log.warn("Not found: {}", sanitize(ex.message))
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
             ErrorResponse(
                 status = 404,
@@ -47,7 +47,7 @@ class GlobalExceptionHandler {
      */
     @ExceptionHandler(OptimisticLockingFailureException::class, DuplicateKeyException::class)
     fun handleConcurrentModification(ex: Exception, request: HttpServletRequest): ResponseEntity<ErrorResponse> {
-        log.warn("Concurrent modification on {}: {}", request.requestURI, ex.message)
+        log.warn("Concurrent modification on {}", sanitize(request.requestURI))
         return ResponseEntity.status(HttpStatus.CONFLICT).body(
             ErrorResponse(
                 status = 409,
@@ -76,10 +76,21 @@ class GlobalExceptionHandler {
         )
     }
 
+    @ExceptionHandler(UnauthorizedException::class)
+    fun handleUnauthorized(ex: UnauthorizedException, request: HttpServletRequest) =
+        error(HttpStatus.UNAUTHORIZED, "Authentication required", request)
+
+    @ExceptionHandler(ForbiddenException::class)
+    fun handleForbidden(ex: ForbiddenException, request: HttpServletRequest) =
+        error(HttpStatus.FORBIDDEN, "Access denied", request)
+
+    @ExceptionHandler(InvalidRequestException::class)
+    fun handleInvalidRequest(ex: InvalidRequestException, request: HttpServletRequest) =
+        error(HttpStatus.BAD_REQUEST, ex.message ?: "Invalid request", request)
+
     /**
-     * Spring MVC's own client errors (bad path/query values, missing params, unreadable
-     * bodies, failed method-parameter validation, wrong verb/media type...) keep the
-     * status Spring assigns them; without this the catch-all below would report 500.
+     * Spring MVC's own client errors keep the status Spring assigns them, but the message is fixed per
+     * error kind: nothing from the parser, the type system or the database reaches the caller.
      */
     @ExceptionHandler(
         MethodArgumentTypeMismatchException::class,
@@ -93,23 +104,38 @@ class GlobalExceptionHandler {
         NoResourceFoundException::class
     )
     fun handleClientError(ex: Exception, request: HttpServletRequest): ResponseEntity<ErrorResponse> {
+        val message = when (ex) {
+            is MethodArgumentTypeMismatchException -> "Invalid value for parameter '${safeName(ex.name)}'"
+            is MissingServletRequestParameterException -> "Missing required parameter '${safeName(ex.parameterName)}'"
+            is HandlerMethodValidationException -> "Request validation failed"
+            is HttpMessageNotReadableException -> "Malformed request body"
+            is HttpRequestMethodNotSupportedException -> "Method not allowed"
+            is HttpMediaTypeNotSupportedException -> "Unsupported media type"
+            is HttpMediaTypeNotAcceptableException -> "Not acceptable"
+            is NoResourceFoundException -> "Resource not found"
+            else -> "Invalid request"
+        }
         val status = (ex as? org.springframework.web.ErrorResponse)?.statusCode?.value() ?: 400
-        val reason = HttpStatus.resolve(status)?.reasonPhrase ?: "Bad Request"
-        return ResponseEntity.status(status).body(
+        return error(HttpStatus.resolve(status) ?: HttpStatus.BAD_REQUEST, message, request)
+    }
+
+    private fun safeName(name: String?): String = (name ?: "").filter { it.isLetterOrDigit() || it in "_.-" }.take(64)
+
+    private fun error(status: HttpStatus, message: String, request: HttpServletRequest) =
+        ResponseEntity.status(status).body(
             ErrorResponse(
-                status = status,
-                error = reason,
-                message = if (ex is HandlerMethodValidationException) "Request validation failed" else (ex.message ?: reason),
+                status = status.value(),
+                error = status.reasonPhrase,
+                message = message,
                 path = request.requestURI,
                 correlationId = MDC.get("correlationId")
             )
         )
-    }
 
     /** product-service answered 404: the product being synced does not exist upstream. */
     @ExceptionHandler(FeignException.NotFound::class)
     fun handleUpstreamNotFound(ex: FeignException.NotFound, request: HttpServletRequest): ResponseEntity<ErrorResponse> {
-        log.warn("Upstream not found on {}: {}", request.requestURI, ex.message)
+        log.warn("Upstream not found on {}", sanitize(request.requestURI))
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
             ErrorResponse(
                 status = 404,
@@ -134,4 +160,7 @@ class GlobalExceptionHandler {
             )
         )
     }
+
+    /** Strips control characters (CR/LF included) and caps the length, so user input cannot forge log lines. */
+    private fun sanitize(value: String?): String = (value ?: "").filter { !it.isISOControl() }.take(256)
 }

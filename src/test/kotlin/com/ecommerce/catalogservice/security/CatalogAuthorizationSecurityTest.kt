@@ -70,7 +70,6 @@ class CatalogAuthorizationSecurityTest {
             if (w.body != null) contentType(MediaType.APPLICATION_JSON).content(w.body)
         }
 
-    @Disabled("BUG S-1: catalog write endpoints never read X-User-Role; any caller (CUSTOMER, no headers, wrong-case ADMIN) is accepted")
     @ParameterizedTest(name = "{0} as role [{1}] is 403 and never reaches the service")
     @MethodSource("nonAdminCallers")
     fun `write endpoint refuses non-admin callers`(w: Write, role: String?) {

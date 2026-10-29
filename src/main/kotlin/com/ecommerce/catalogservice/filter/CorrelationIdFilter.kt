@@ -14,6 +14,7 @@ class CorrelationIdFilter : OncePerRequestFilter() {
     companion object {
         const val CORRELATION_ID_HEADER = "X-Correlation-Id"
         const val CORRELATION_ID_MDC_KEY = "correlationId"
+        private val VALID = Regex("^[A-Za-z0-9._-]{1,64}$")
     }
 
     override fun doFilterInternal(
@@ -21,7 +22,8 @@ class CorrelationIdFilter : OncePerRequestFilter() {
         response: HttpServletResponse,
         filterChain: FilterChain
     ) {
-        val correlationId = request.getHeader(CORRELATION_ID_HEADER) ?: UUID.randomUUID().toString()
+        val incoming = request.getHeader(CORRELATION_ID_HEADER)
+        val correlationId = if (incoming != null && VALID.matches(incoming)) incoming else UUID.randomUUID().toString()
         MDC.put(CORRELATION_ID_MDC_KEY, correlationId)
         response.setHeader(CORRELATION_ID_HEADER, correlationId)
         try {

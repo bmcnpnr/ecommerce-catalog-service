@@ -56,13 +56,29 @@ class CorrelationIdFilterTest {
     }
 
     @Test
-    fun `an empty header is used as is - only a missing header gets a new id`() {
-        request.addHeader(CorrelationIdFilter.CORRELATION_ID_HEADER, "")
+    fun `an empty, hostile or over-long header is replaced by a fresh UUID`() {
+        for (bad in listOf("", "   ", "has space", "<script>alert(1)</script>", "a/b", "a".repeat(65))) {
+            val req = MockHttpServletRequest("GET", "/api/v1/catalog")
+            req.addHeader(CorrelationIdFilter.CORRELATION_ID_HEADER, bad)
+            val res = MockHttpServletResponse()
+
+            filter.doFilter(req, res, recordingChain)
+
+            val id = res.getHeader(CorrelationIdFilter.CORRELATION_ID_HEADER)
+            assertNotEquals(bad, id)
+            assertDoesNotThrow { UUID.fromString(id) }
+            assertEquals(id, seenInChain)
+        }
+    }
+
+    @Test
+    fun `a 64 character id of allowed characters is kept`() {
+        val ok = "A-b_c.9".repeat(9).take(64)
+        request.addHeader(CorrelationIdFilter.CORRELATION_ID_HEADER, ok)
 
         filter.doFilter(request, response, recordingChain)
 
-        assertEquals("", seenInChain)
-        assertEquals("", response.getHeader(CorrelationIdFilter.CORRELATION_ID_HEADER))
+        assertEquals(ok, response.getHeader(CorrelationIdFilter.CORRELATION_ID_HEADER))
     }
 
     @Test

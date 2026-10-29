@@ -46,7 +46,6 @@ class CatalogDataIntegritySecurityIT : AbstractCatalogIT() {
 
     // ───────────────────────── authorization (S-1), with database proof ─────────────────────────
 
-    @Disabled("BUG S-1: a CUSTOMER (or no role at all) can sync, feature, re-image and re-price catalog entries; the database changes")
     @Test
     fun `customer cannot modify the catalog and the database is untouched`() {
         seed(1)
@@ -58,7 +57,9 @@ class CatalogDataIntegritySecurityIT : AbstractCatalogIT() {
         assertEquals(403, call("PATCH", "/api/v1/catalog/product/1", """{"featured":true}""", customer).status)
         assertEquals(403, call("PATCH", "/api/v1/catalog/product/1", """{"imageUrl":"https://evil.example/x.png"}""", customer).status)
         assertEquals(403, call("PATCH", "/api/v1/catalog/product/1", """{"price":0.01}""", customer).status)
-        assertEquals(403, call("PATCH", "/api/v1/catalog/product/1", """{"price":0.01}""").status)
+        // no identity at all is 401 (spec), a non-admin identity is 403
+        assertEquals(401, call("PATCH", "/api/v1/catalog/product/1", """{"price":0.01}""", asAdmin = false).status)
+        assertEquals(401, call("POST", "/api/v1/catalog/sync/2", asAdmin = false).status)
 
         val stored = repository.findById(1L).get()
         assertFalse(stored.featured)
@@ -121,7 +122,6 @@ class CatalogDataIntegritySecurityIT : AbstractCatalogIT() {
         assertTrue(r.headers.firstValue("Content-Type").orElse("").startsWith("application/json"), "content type was ${r.headers.firstValue("Content-Type").orElse("")}")
     }
 
-    @Disabled("BUG S-57: responses carry no X-Content-Type-Options: nosniff, so a browser may sniff stored markup in JSON bodies reached directly (compose publishes the port)")
     @Test
     fun `json responses send nosniff`() {
         seed(1, "<script>alert(1)</script>")
@@ -136,7 +136,6 @@ class CatalogDataIntegritySecurityIT : AbstractCatalogIT() {
         strings = ["javascript:alert(document.cookie)", "JaVaScRiPt:alert(1)", "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
             "vbscript:msgbox(1)", "file:///etc/passwd", "ftp://evil.example/x", "//evil.example/x.png", "  javascript:alert(1)", "http://"]
     )
-    @Disabled("BUG S-52: imageUrl is stored without any validation: javascript:, data:, file: and scheme-relative URLs are accepted and served to every storefront visitor")
     fun `dangerous image URL schemes are rejected`(url: String) {
         seed(1)
 
@@ -146,7 +145,6 @@ class CatalogDataIntegritySecurityIT : AbstractCatalogIT() {
         assertEquals("https://img.example/1.png", repository.findById(1L).get().imageUrl)
     }
 
-    @Disabled("BUG S-52: imageUrl has no length limit (a 1 MB URL is stored and served back on every listing)")
     @Test
     fun `an enormous image URL is rejected`() {
         seed(1)
@@ -169,7 +167,6 @@ class CatalogDataIntegritySecurityIT : AbstractCatalogIT() {
 
     @ParameterizedTest(name = "PATCH price {0} is rejected and the stored price is unchanged")
     @ValueSource(strings = ["-1", "-0.01", "0", "0.00", "0.004", "-99999999999"])
-    @Disabled("BUG S-50: PATCH price is not validated - negative, zero and sub-cent prices (rounded to 0.00) are stored and served")
     fun `non-positive prices are rejected`(price: String) {
         seed(1)
 
@@ -190,7 +187,6 @@ class CatalogDataIntegritySecurityIT : AbstractCatalogIT() {
         assertEquals(0, BigDecimal("10.00").compareTo(repository.findById(1L).get().price))
     }
 
-    @Disabled("BUG S-51: PATCH price has no upper bound - 1E+400 and 41-digit prices are accepted and stored")
     @Test
     fun `absurdly large prices are rejected`() {
         seed(1)
@@ -203,9 +199,11 @@ class CatalogDataIntegritySecurityIT : AbstractCatalogIT() {
     }
 
     @Test
-    fun `a valid price update is stored rounded to cents`() {
+    fun `a valid price update is stored in cents and a sub-cent price is rejected, not rounded`() {
         seed(1)
-        assertEquals(200, patch(1, """{"price":12.345}""").status)
+        assertEquals(200, patch(1, """{"price":12.35}""").status)
+        assertEquals(BigDecimal("12.35"), repository.findById(1L).get().price)
+        assertEquals(400, patch(1, """{"price":12.345}""").status)
         assertEquals(BigDecimal("12.35"), repository.findById(1L).get().price)
     }
 
@@ -276,7 +274,6 @@ class CatalogDataIntegritySecurityIT : AbstractCatalogIT() {
         assertEquals(400, r.status, r.body)
     }
 
-    @Disabled("BUG S-56: 400 bodies echo parser text and Java/Kotlin type names (ex.message) for unreadable bodies and bad path variables")
     @Test
     fun `client error bodies do not reveal parser text or type names`() {
         seed(1)
@@ -331,7 +328,6 @@ class CatalogDataIntegritySecurityIT : AbstractCatalogIT() {
         assertEquals(listOf("abc-123"), r.headers.allValues("X-Correlation-Id"))
     }
 
-    @Disabled("BUG S-55: X-Correlation-Id is taken from the client unvalidated (any length/characters, even blank) and written to MDC/logs and the response header")
     @Test
     fun `hostile or oversized correlation ids are replaced`() {
         val hostile = "x <script>alert(1)</script> 2026-10-29 ERROR forged log line"

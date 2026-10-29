@@ -134,12 +134,20 @@ abstract class AbstractCatalogIT {
         val json: JsonNode by lazy { AbstractCatalogIT.json.readTree(body) }
     }
 
-    protected fun call(method: String, path: String, body: String? = null, headers: Map<String, String> = emptyMap()): Response {
+    /**
+     * Writes (anything but GET) are sent as the gateway would forward an administrator unless [asAdmin] is
+     * false or [headers] sets its own `X-User-Role`.
+     */
+    protected fun call(
+        method: String, path: String, body: String? = null, headers: Map<String, String> = emptyMap(),
+        asAdmin: Boolean = method != "GET"
+    ): Response {
         val builder = HttpRequest.newBuilder(URI.create("http://localhost:$port$path"))
             .timeout(Duration.ofSeconds(60))
             .method(method, body?.let { HttpRequest.BodyPublishers.ofString(it) } ?: HttpRequest.BodyPublishers.noBody())
         if (body != null) builder.header("Content-Type", "application/json")
-        headers.forEach { (k, v) -> builder.header(k, v) }
+        val effective = (if (asAdmin) mapOf("X-User-Role" to "ADMIN") else emptyMap()) + headers
+        effective.forEach { (k, v) -> builder.header(k, v) }
         val response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString())
         return Response(response.statusCode(), response.headers(), response.body())
     }

@@ -71,8 +71,8 @@ class CatalogInjectionSecurityIT : AbstractCatalogIT() {
 
     @Test
     fun `regex metacharacters in a query are matched literally`() {
-        assertEquals(listOf("Mouse.Pad (large) [blue]"), search(".Pad (large) [").json["content"].map { it["productName"].asString() })
-        assertEquals(listOf("100% Cotton Shirt"), search("100% cotton").json["content"].map { it["productName"].asString() })
+        assertEquals(listOf("Mouse.Pad (large) [blue]"), search(".Pad (large) [").json["content"].values().map { it["productName"].asString() })
+        assertEquals(listOf("100% Cotton Shirt"), search("100% cotton").json["content"].values().map { it["productName"].asString() })
     }
 
     @Test
@@ -167,10 +167,10 @@ class CatalogInjectionSecurityIT : AbstractCatalogIT() {
 
     @Test
     fun `dollar and dot strings are stored as plain values and never interpreted`() {
-        val r = call("PATCH", "/api/v1/catalog/product/1", """{"imageUrl":"${'$'}where.${'$'}ne","price":12.5}""")
+        val r = call("PATCH", "/api/v1/catalog/product/1", """{"imageUrl":"https://img.example/${'$'}where.${'$'}ne","price":12.5}""")
         assertEquals(200, r.status, r.body)
 
-        assertEquals("\$where.\$ne", repository.findById(1L).get().imageUrl)
+        assertEquals("https://img.example/\$where.\$ne", repository.findById(1L).get().imageUrl)
         assertEquals(6, repository.count())
     }
 
@@ -186,14 +186,12 @@ class CatalogInjectionSecurityIT : AbstractCatalogIT() {
         assertEquals(7, repository.count())
     }
 
-    @Disabled("BUG S-54: a NUL character in the search text makes the search query fail and the API answers 500 instead of 400")
     @Test
     fun `NUL character in a search query is a client error`() {
         val r = call("GET", "/api/v1/catalog/search?q=a%00b")
         assertTrue(r.status < 500, "q=a<NUL>b -> ${r.status} ${r.body}")
     }
 
-    @Disabled("BUG S-53: no upper bound on the page size - size=100000000 returns the whole collection in one response")
     @Test
     fun `huge page size is capped or rejected`() {
         repository.saveAll((1000L..3500L).map {
