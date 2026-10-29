@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.extension.ExtendWith
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.CsvSource
 import org.mockito.ArgumentCaptor
 import org.mockito.InjectMocks
 import org.mockito.Mock
@@ -22,6 +24,7 @@ import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.data.domain.PageImpl
 import org.springframework.data.domain.PageRequest
 import java.math.BigDecimal
+import java.time.LocalDateTime
 import java.util.Optional
 
 @ExtendWith(MockitoExtension::class)
@@ -273,5 +276,136 @@ class CatalogServiceTest {
             catalogService.updateCatalogEntry(100L, UpdateCatalogEntryRequest(featured = true))
         }
         verify(catalogEntryRepository, times(1)).save(entry)
+    }
+
+    private fun product(stockQuantity: Int = 50, categoryId: Long? = 5L) = ProductDTO(
+        id = 100L, sku = "SKU-001", name = "Test Product", description = "A test product",
+        price = BigDecimal("29.99"), stockQuantity = stockQuantity, brand = "TestBrand", categoryId = categoryId, status = "ACTIVE"
+    )
+
+    private fun stubFreshInsert() {
+        `when`(catalogEntryRepository.findById(100L)).thenReturn(Optional.empty())
+        `when`(catalogEntryRepository.save(any(CatalogEntry::class.java))).thenAnswer { it.arguments[0] }
+    }
+
+    @ParameterizedTest(name = "stockQuantity {0} -> {1}")
+    @CsvSource(
+        "-1, OUT_OF_STOCK",
+        "0, OUT_OF_STOCK",
+        "1, LOW_STOCK",
+        "9, LOW_STOCK",
+        "10, AVAILABLE",
+        "500, AVAILABLE"
+    )
+    fun `syncFromProductService derives the stock status from the quantity thresholds`(quantity: Int, expected: StockStatus) {
+        `when`(productServiceClient.getProductById(100L)).thenReturn(product(stockQuantity = quantity))
+        `when`(productServiceClient.getAllCategories()).thenReturn(emptyList())
+        stubFreshInsert()
+
+        assertEquals(expected, catalogService.syncFromProductService(100L).stockStatus)
+    }
+
+    @Test
+    fun `syncFromProductService projects every product field into the entry`() {
+        `when`(productServiceClient.getProductById(100L)).thenReturn(product())
+        `when`(productServiceClient.getAllCategories()).thenReturn(
+            listOf(
+                CategoryDTO(id = 4L, name = "Books", description = null, parentCategoryId = null),
+                CategoryDTO(id = 5L, name = "Electronics", description = null, parentCategoryId = null)
+            )
+        )
+        stubFreshInsert()
+
+        val result = catalogService.syncFromProductService(100L)
+
+        assertEquals(100L, result.productId)
+        assertEquals("SKU-001", result.productSku)
+        assertEquals("Test Product", result.productName)
+        assertEquals("A test product", result.description)
+        assertEquals(BigDecimal("29.99"), result.price)
+        assertEquals("TestBrand", result.brand)
+        assertEquals(5L, result.categoryId)
+        assertEquals("Electronics", result.categoryName, "the category is looked up by the product's categoryId")
+        assertFalse(result.featured, "a new entry is not featured")
+        assertNull(result.imageUrl)
+    }
+
+    @Test
+    fun `syncFromProductService still syncs when the categories call fails, without a category name`() {
+        `when`(productServiceClient.getProductById(100L)).thenReturn(product())
+        `when`(productServiceClient.getAllCategories()).thenThrow(RuntimeException("product-service: categories down"))
+        stubFreshInsert()
+
+        val result = catalogService.syncFromProductService(100L)
+
+        assertEquals(5L, result.categoryId)
+        assertNull(result.categoryName)
+        verify(catalogEntryRepository).save(any(CatalogEntry::class.java))
+    }
+
+    @Test
+    fun `syncFromProductService leaves the category name empty when the product's category is unknown`() {
+        `when`(productServiceClient.getProductById(100L)).thenReturn(product(categoryId = 77L))
+        `when`(productServiceClient.getAllCategories()).thenReturn(
+            listOf(CategoryDTO(id = 5L, name = "Electronics", description = null, parentCategoryId = null))
+        )
+        stubFreshInsert()
+
+        val result = catalogService.syncFromProductService(100L)
+
+        assertEquals(77L, result.categoryId)
+        assertNull(result.categoryName)
+    }
+
+    @Test
+    fun `syncFromProductService writes nothing when the product cannot be fetched`() {
+        `when`(productServiceClient.getProductById(100L)).thenThrow(RuntimeException("product-service unavailable"))
+
+        assertThrows<RuntimeException> { catalogService.syncFromProductService(100L) }
+        verifyNoInteractions(catalogEntryRepository)
+        verify(productServiceClient, never()).getAllCategories()
+    }
+
+    @Test
+    fun `syncFromProductService refreshes updatedAt but keeps createdAt of an existing entry`() {
+        val existing = CatalogEntry(
+            productId = 100L, productSku = "SKU-001", productName = "Old", price = BigDecimal("1.00"),
+            createdAt = LocalDateTime.of(2020, 1, 1, 0, 0), updatedAt = LocalDateTime.of(2020, 1, 1, 0, 0)
+        )
+        `when`(productServiceClient.getProductById(100L)).thenReturn(product())
+        `when`(productServiceClient.getAllCategories()).thenReturn(emptyList())
+        `when`(catalogEntryRepository.findById(100L)).thenReturn(Optional.of(existing))
+        `when`(catalogEntryRepository.save(existing)).thenReturn(existing)
+
+        val result = catalogService.syncFromProductService(100L)
+
+        assertEquals(LocalDateTime.of(2020, 1, 1, 0, 0), result.createdAt)
+        assertTrue(result.updatedAt.isAfter(LocalDateTime.of(2020, 1, 1, 0, 0)))
+    }
+
+    @Test
+    fun `getAllEntries maps the requested page`() {
+        val pageable = PageRequest.of(2, 5)
+        `when`(catalogEntryRepository.findAll(pageable)).thenReturn(PageImpl(listOf(sampleEntry()), pageable, 11))
+
+        val result = catalogService.getAllEntries(pageable)
+
+        assertEquals(11, result.totalElements)
+        assertEquals(2, result.number)
+        assertEquals(100L, result.content.single().productId)
+    }
+
+    @Test
+    fun `updateCatalogEntry only changes the fields present in the request`() {
+        val entry = sampleEntry().also { it.featured = true; it.updatedAt = LocalDateTime.of(2020, 1, 1, 0, 0) }
+        `when`(catalogEntryRepository.findById(100L)).thenReturn(Optional.of(entry))
+        `when`(catalogEntryRepository.save(entry)).thenReturn(entry)
+
+        val result = catalogService.updateCatalogEntry(100L, UpdateCatalogEntryRequest(imageUrl = "http://img/new.png"))
+
+        assertEquals("http://img/new.png", result.imageUrl)
+        assertTrue(result.featured, "featured not in the request -> unchanged")
+        assertEquals(BigDecimal("29.99"), result.price, "price not in the request -> unchanged")
+        assertTrue(result.updatedAt.isAfter(LocalDateTime.of(2020, 1, 1, 0, 0)), "every PATCH bumps updatedAt")
     }
 }

@@ -24,6 +24,7 @@
         <spring-cloud.version>2025.1.1</spring-cloud.version>
         <springdoc.version>2.8.5</springdoc.version>
         <pact.version>4.7.5</pact.version>
+        <wiremock.version>3.13.1</wiremock.version>
     </properties>
 
     <dependencyManagement>
@@ -138,6 +139,16 @@
             <version>${pact.version}</version>
             <scope>test</scope>
         </dependency>
+        <!-- Integration tests (*IT, run by failsafe in `verify`) stand product-service
+             up as a WireMock server, so the real Feign client, retryer and error path
+             run over HTTP. The standalone artifact shades its Jetty and Jackson 2, so
+             nothing clashes with Boot 4's Tomcat and Jackson 3. Not Boot-managed. -->
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock-standalone</artifactId>
+            <version>${wiremock.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -201,6 +212,25 @@
                         <pact_do_not_track>true</pact_do_not_track>
                     </systemPropertyVariables>
                 </configuration>
+            </plugin>
+            <!-- Runs the *IT classes (src/test/kotlin/.../integration) in integration-test
+                 and fails the build in verify. They need a Docker daemon (Testcontainers). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <pact_do_not_track>true</pact_do_not_track>
+                    </systemPropertyVariables>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

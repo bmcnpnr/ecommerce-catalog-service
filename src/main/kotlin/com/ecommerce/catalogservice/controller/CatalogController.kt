@@ -6,6 +6,7 @@ import com.ecommerce.catalogservice.service.CatalogService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.security.SecurityRequirement
 import io.swagger.v3.oas.annotations.tags.Tag
+import jakarta.validation.constraints.Min
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.PageRequest
 import org.springframework.http.ResponseEntity
@@ -24,8 +25,8 @@ class CatalogController(private val catalogService: CatalogService) {
     )
     fun search(
         @RequestParam q: String,
-        @RequestParam(defaultValue = "0") page: Int,
-        @RequestParam(defaultValue = "20") size: Int
+        @RequestParam(defaultValue = "0") @Min(0) page: Int,
+        @RequestParam(defaultValue = "20") @Min(1) size: Int
     ): ResponseEntity<Page<CatalogEntryDTO>> {
         return ResponseEntity.ok(catalogService.searchCatalog(q, PageRequest.of(page, size)))
     }
@@ -33,8 +34,8 @@ class CatalogController(private val catalogService: CatalogService) {
     @GetMapping
     @Operation(summary = "Browse all catalog entries")
     fun browse(
-        @RequestParam(defaultValue = "0") page: Int,
-        @RequestParam(defaultValue = "20") size: Int
+        @RequestParam(defaultValue = "0") @Min(0) page: Int,
+        @RequestParam(defaultValue = "20") @Min(1) size: Int
     ): ResponseEntity<Page<CatalogEntryDTO>> {
         return ResponseEntity.ok(catalogService.getAllEntries(PageRequest.of(page, size)))
     }

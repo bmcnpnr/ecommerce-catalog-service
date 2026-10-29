@@ -12,6 +12,8 @@ spring:
       eager-load:
         clients: product-service
     openfeign:
+      circuitbreaker:
+        enabled: true
       client:
         config:
           default:
@@ -116,6 +118,9 @@ resilience4j:
         minimumNumberOfCalls: 5
         failureRateThreshold: 50
         waitDurationInOpenState: 10s
+        # A 404 means the product does not exist: a valid answer, not a failure.
+        ignoreExceptions:
+          - feign.FeignException$NotFound
 
 logging:
   pattern:
