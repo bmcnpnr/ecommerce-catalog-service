@@ -86,4 +86,25 @@ class CatalogCollectionInitializerIT : AbstractCatalogIT() {
         assertTrue(response.json["featured"].asBoolean())
         assertEquals(1L, repository.findById(61L).get().version)
     }
+
+    @Test
+    fun `an index that conflicts with an existing one is skipped with an error - startup and the other indexes are not affected`() {
+        val collection = mongoTemplate.getCollection(CatalogEntry.COLLECTION)
+        val conflicting = "idx_catalog_entries_featured"
+        try {
+            // same name, different key: MongoDB refuses to create the declared index until someone drops this one
+            collection.dropIndex(conflicting)
+            collection.createIndex(Document("brand", 1), com.mongodb.client.model.IndexOptions().name(conflicting))
+            collection.dropIndex("idx_catalog_entries_stock_status")
+
+            assertDoesNotThrow { initializer.run(DefaultApplicationArguments()) }
+
+            assertTrue("idx_catalog_entries_stock_status" in indexNames(), "the other indexes are still created")
+            assertTrue(CatalogCollectionInitializer.TEXT_INDEX in indexNames())
+        } finally {
+            collection.dropIndex(conflicting)
+            initializer.run(DefaultApplicationArguments()) // leave the shared database as startup left it
+        }
+        assertEquals(expectedIndexes, indexNames())
+    }
 }

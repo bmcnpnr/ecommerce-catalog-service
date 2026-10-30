@@ -2,6 +2,8 @@ package com.ecommerce.catalogservice.config
 
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.http.converter.autoconfigure.ClientHttpMessageConvertersCustomizer
+import org.springframework.cloud.openfeign.CircuitBreakerNameResolver
+import org.springframework.cloud.openfeign.clientconfig.HttpClient5FeignConfiguration
 import org.springframework.cloud.openfeign.support.FeignHttpMessageConverters
 import org.springframework.cloud.openfeign.support.HttpMessageConverterCustomizer
 import org.springframework.context.annotation.Bean
@@ -45,6 +47,28 @@ class FeignConfig {
      */
     @Bean
     fun feignRetryer(): Retryer = ConnectionFailureRetryer()
+
+    /**
+     * Apache HttpClient 5 quietly re-sends an idempotent request once on a reset connection and again, after a
+     * pause, on a 503 (R-6). That is a second retry layer under [ConnectionFailureRetryer], one that contradicts
+     * the rule above and doubles the load on a peer that is already struggling. Switched off, so the retryer is
+     * the only one.
+     */
+    @Bean
+    fun noAutomaticHttpClientRetries(): HttpClient5FeignConfiguration.HttpClientBuilderCustomizer =
+        HttpClient5FeignConfiguration.HttpClientBuilderCustomizer { builder -> builder.disableAutomaticRetries() }
+
+    /**
+     * One circuit breaker per downstream service instead of one per client method (the default names are derived
+     * from the interface and method, e.g. `ProductServiceClientgetProductByIdLong`). The name is what
+     * `resilience4j.circuitbreaker.instances.product-service` and `resilience4j.timelimiter.instances.product-service`
+     * in application.yaml configure; with the default names those blocks applied to nothing and the breaker ran on
+     * resilience4j's defaults (100 calls before it could open, and a 1 s time limit that cut every slower call to
+     * the fallback).
+     */
+    @Bean
+    fun circuitBreakerNameResolver(): CircuitBreakerNameResolver =
+        CircuitBreakerNameResolver { feignClientName, _, _ -> feignClientName }
 
     class ConnectionFailureRetryer(
         private val maxAttempts: Int = 3,

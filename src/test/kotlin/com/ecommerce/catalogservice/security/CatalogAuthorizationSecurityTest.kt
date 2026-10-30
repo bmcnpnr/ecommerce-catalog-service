@@ -13,6 +13,8 @@ import org.junit.jupiter.params.provider.MethodSource
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
+import org.springframework.data.domain.PageRequest
+import org.springframework.data.domain.Pageable
 import org.springframework.http.HttpMethod
 import org.springframework.http.MediaType
 import org.springframework.test.web.servlet.MockMvc
@@ -87,8 +89,8 @@ class CatalogAuthorizationSecurityTest {
 
     @Test
     fun `reads stay public without any identity headers`() {
-        `when`(service.getFeaturedProducts()).thenReturn(emptyList())
-        `when`(service.getCatalogByCategory(5L)).thenReturn(emptyList())
+        `when`(service.getFeaturedProducts(anyPage())).thenReturn(emptyList())
+        `when`(service.getCatalogByCategory(eq(5L), anyPage())).thenReturn(emptyList())
 
         for (path in listOf(
             "/api/v1/catalog/featured", "/api/v1/catalog/category/5"
@@ -97,4 +99,9 @@ class CatalogAuthorizationSecurityTest {
         }
         // the paged reads (browse/search) are covered over real HTTP in CatalogDataIntegritySecurityIT
     }
+
+    /** Mockito's any() hands Kotlin a null for a non-null parameter; the elvis supplies a placeholder the matcher ignores. */
+    private fun anyPage(): Pageable = org.mockito.ArgumentMatchers.any(Pageable::class.java) ?: PageRequest.of(0, 1)
+
+    private fun eq(value: Long): Long = org.mockito.ArgumentMatchers.eq(value)
 }

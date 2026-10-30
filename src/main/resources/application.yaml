@@ -11,6 +11,17 @@ spring:
       # peer fails with "Load balancer does not contain an instance".
       eager-load:
         clients: product-service
+    # Spring Cloud CircuitBreaker, left on its defaults, hands every call to a worker thread behind a time limiter
+    # (1 s, which silently cuts every slower call) and a bulkhead thread pool of one thread per CPU with a
+    # 100-call queue (two concurrent calls in a 2-CPU container, the rest rejected). All three are off: the call
+    # runs on the calling thread, Feign's connect and read timeouts below govern, and the breaker only counts.
+    circuitbreaker:
+      resilience4j:
+        disable-thread-pool: true
+        disable-time-limiter: true
+      bulkhead:
+        resilience4j:
+          enabled: false
     openfeign:
       circuitbreaker:
         enabled: true
@@ -52,6 +63,15 @@ spring:
       # Indexes are created explicitly by CatalogCollectionInitializer (the role the
       # Flyway migration used to play) rather than on mapping-context startup.
       auto-index-creation: false
+
+# MongoDB client timeouts (MongoConfig.mongoClientTimeouts, D4). The driver's own defaults are a 30s server
+# selection (every request hangs through an outage), no socket timeouts and a 2 minute pool wait.
+catalog:
+  mongo:
+    server-selection-timeout: 3s
+    connect-timeout: 2s
+    socket-timeout: 5s
+    pool-wait-timeout: 2s
 
 eureka:
   client:
@@ -113,15 +133,42 @@ springdoc:
 resilience4j:
   circuitbreaker:
     instances:
+      # The Feign client's breaker is named after the client (FeignConfig.circuitBreakerNameResolver).
       product-service:
         slidingWindowSize: 10
         minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
         failureRateThreshold: 50
         waitDurationInOpenState: 10s
-        # A 404 means the product does not exist: a valid answer, not a failure.
+        # A product-service that answers, but slowly, still holds a request thread per call for up to the read
+        # timeout (10 s). Calls over 5 s count as slow, and when 80 % of the window is slow the breaker opens
+        # and the rest fail fast instead of piling up behind it.
+        slowCallDurationThreshold: 5s
+        slowCallRateThreshold: 80
+        # Without this the breaker leaves OPEN only when a call is attempted, so an idle service stays
+        # "open" in the metrics (and in the CircuitBreakerOpen alert) indefinitely.
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        # A 4xx means the request was wrong or the thing does not exist: product-service is healthy.
+        # Counting those would let a few syncs of unknown product ids trip the breaker for everyone.
         ignoreExceptions:
+          - feign.FeignException$BadRequest
+          - feign.FeignException$Unauthorized
+          - feign.FeignException$Forbidden
           - feign.FeignException$NotFound
+          - feign.FeignException$MethodNotAllowed
+          - feign.FeignException$NotAcceptable
+          - feign.FeignException$Conflict
+          - feign.FeignException$Gone
+          - feign.FeignException$UnsupportedMediaType
+          - feign.FeignException$UnprocessableEntity
 
 logging:
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} [%X{correlationId}] [%thread] %-5level %logger{36} - %msg%n"
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] [%X{correlationId:-}] [%X{traceId:-}] %-5level %logger{36} - %msg%n"
+  level:
+    # INFO by default; LOGGING_LEVEL_COM_ECOMMERCE=DEBUG turns debug on for a diagnosis.
+    com.ecommerce: INFO
+    # While MongoDB is unreachable the driver logs one INFO line for every operation that waits for a server (600+
+    # characters: the whole topology) and a stack trace for every failed heartbeat, i.e. a line per request for as long
+    # as the outage lasts. The service's own throttled WARN, the health check and the mongodb_exporter alerts say it.
+    org.mongodb.driver: WARN

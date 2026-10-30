@@ -251,7 +251,7 @@ class CatalogDataIntegritySecurityIT : AbstractCatalogIT() {
     }
 
     @Test
-    fun `unexpected failure answers a generic 500 without internals`() {
+    fun `an upstream failure answers a fixed 502 without internals`() {
         stubProduct(5)
         productService.stubFor(
             get(urlEqualTo("/api/v1/products/6")).willReturn(
@@ -261,7 +261,9 @@ class CatalogDataIntegritySecurityIT : AbstractCatalogIT() {
 
         val r = call("POST", "/api/v1/catalog/sync/6")
 
-        assertEquals(500, r.status, r.body)
+        // product-service answered 500: not our bug but an unusable upstream answer, reported as a fixed 502
+        assertEquals(502, r.status, r.body)
+        assertEquals("Upstream service error", r.json["message"].asString())
         assertFalse(r.body.contains("productpass"))
         assertFalse(r.body.contains("jdbc"))
         assertNoInternals(r.body)

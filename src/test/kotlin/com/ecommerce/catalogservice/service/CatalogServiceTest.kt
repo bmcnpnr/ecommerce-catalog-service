@@ -5,6 +5,8 @@ import com.ecommerce.catalogservice.dto.CategoryDTO
 import com.ecommerce.catalogservice.dto.ProductDTO
 import com.ecommerce.catalogservice.dto.UpdateCatalogEntryRequest
 import com.ecommerce.catalogservice.exception.CatalogEntryNotFoundException
+import com.ecommerce.catalogservice.exception.ProductServiceErrorException
+import com.ecommerce.catalogservice.exception.ProductServiceUnavailableException
 import com.ecommerce.catalogservice.model.CatalogEntry
 import com.ecommerce.catalogservice.model.StockStatus
 import com.ecommerce.catalogservice.repository.CatalogEntryRepository
@@ -13,7 +15,9 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.extension.ExtendWith
 import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.Arguments
 import org.junit.jupiter.params.provider.CsvSource
+import org.junit.jupiter.params.provider.MethodSource
 import org.mockito.ArgumentCaptor
 import org.mockito.InjectMocks
 import org.mockito.Mock
@@ -55,9 +59,10 @@ class CatalogServiceTest {
     @Test
     fun `getFeaturedProducts returns mapped DTOs`() {
         val entry = sampleEntry().also { it.featured = true }
-        `when`(catalogEntryRepository.findByFeaturedTrue()).thenReturn(listOf(entry))
+        val page = PageRequest.of(0, 100)
+        `when`(catalogEntryRepository.findByFeaturedTrue(page)).thenReturn(listOf(entry))
 
-        val result = catalogService.getFeaturedProducts()
+        val result = catalogService.getFeaturedProducts(page)
 
         assertEquals(1, result.size)
         assertEquals(100L, result[0].productId)
@@ -89,12 +94,26 @@ class CatalogServiceTest {
     @Test
     fun `getCatalogByCategory returns entries for category`() {
         val entry = sampleEntry()
-        `when`(catalogEntryRepository.findByCategoryId(5L)).thenReturn(listOf(entry))
+        val page = PageRequest.of(0, 100)
+        `when`(catalogEntryRepository.findByCategoryId(5L, page)).thenReturn(listOf(entry))
 
-        val result = catalogService.getCatalogByCategory(5L)
+        val result = catalogService.getCatalogByCategory(5L, page)
 
         assertEquals(1, result.size)
         assertEquals(5L, result[0].categoryId)
+    }
+
+    @Test
+    fun `the category and featured lists only ever ask the database for one page`() {
+        val page = PageRequest.of(3, 25)
+        `when`(catalogEntryRepository.findByCategoryId(5L, page)).thenReturn(emptyList())
+        `when`(catalogEntryRepository.findByFeaturedTrue(page)).thenReturn(emptyList())
+
+        catalogService.getCatalogByCategory(5L, page)
+        catalogService.getFeaturedProducts(page)
+
+        verify(catalogEntryRepository, never()).findByCategoryId(anyLong())
+        verify(catalogEntryRepository, never()).findByFeaturedTrue()
     }
 
     @Test
@@ -188,7 +207,6 @@ class CatalogServiceTest {
                 price = BigDecimal("19.9900"), stockQuantity = 50, brand = null, categoryId = null, status = "ACTIVE"
             )
         )
-        `when`(productServiceClient.getAllCategories()).thenReturn(emptyList())
         `when`(catalogEntryRepository.findById(100L)).thenReturn(Optional.empty())
         `when`(catalogEntryRepository.save(any(CatalogEntry::class.java))).thenAnswer { it.arguments[0] }
 
@@ -211,7 +229,6 @@ class CatalogServiceTest {
                 price = BigDecimal("39.99"), stockQuantity = 0, brand = null, categoryId = null, status = "ACTIVE"
             )
         )
-        `when`(productServiceClient.getAllCategories()).thenReturn(emptyList())
         `when`(catalogEntryRepository.findById(100L)).thenReturn(Optional.of(existing))
         `when`(catalogEntryRepository.save(existing)).thenReturn(existing)
 
@@ -233,7 +250,6 @@ class CatalogServiceTest {
                 price = BigDecimal("1.00"), stockQuantity = 50, brand = null, categoryId = null, status = "ACTIVE"
             )
         )
-        `when`(productServiceClient.getAllCategories()).thenReturn(emptyList())
         val winner = sampleEntry().also { it.version = 0L }
         // 1st attempt: nothing there -> insert collides with a concurrent sync; 2nd: the winner's document is found
         `when`(catalogEntryRepository.findById(100L)).thenReturn(Optional.empty()).thenReturn(Optional.of(winner))
@@ -257,7 +273,6 @@ class CatalogServiceTest {
                 price = BigDecimal("1.00"), stockQuantity = 50, brand = null, categoryId = null, status = "ACTIVE"
             )
         )
-        `when`(productServiceClient.getAllCategories()).thenReturn(emptyList())
         `when`(catalogEntryRepository.findById(100L)).thenReturn(Optional.of(sampleEntry()))
         `when`(catalogEntryRepository.save(any(CatalogEntry::class.java)))
             .thenThrow(OptimisticLockingFailureException("version moved"))
@@ -276,6 +291,24 @@ class CatalogServiceTest {
             catalogService.updateCatalogEntry(100L, UpdateCatalogEntryRequest(featured = true))
         }
         verify(catalogEntryRepository, times(1)).save(entry)
+    }
+
+    companion object {
+        private fun valid() = ProductDTO(
+            id = 100L, sku = "SKU-001", name = "Test Product", description = "A test product",
+            price = BigDecimal("29.99"), stockQuantity = 50, brand = "TestBrand", categoryId = 5L, status = "ACTIVE"
+        )
+
+        @JvmStatic
+        fun unusableProducts() = listOf(
+            Arguments.of("another product's id", valid().copy(id = 101L)),
+            Arguments.of("blank sku", valid().copy(sku = " ")),
+            Arguments.of("blank name", valid().copy(name = "")),
+            Arguments.of("price zero", valid().copy(price = BigDecimal.ZERO)),
+            Arguments.of("negative price", valid().copy(price = BigDecimal("-1.00"))),
+            Arguments.of("price beyond 15 integer digits", valid().copy(price = BigDecimal("1000000000000000.00"))),
+            Arguments.of("price with 11 decimals", valid().copy(price = BigDecimal("0.00000000001")))
+        )
     }
 
     private fun product(stockQuantity: Int = 50, categoryId: Long? = 5L) = ProductDTO(
@@ -355,6 +388,79 @@ class CatalogServiceTest {
 
         assertEquals(77L, result.categoryId)
         assertNull(result.categoryName)
+    }
+
+    @Test
+    fun `a failed categories lookup keeps the category name already stored - it does not blank it`() {
+        val existing = sampleEntry() // category 5, "Electronics"
+        `when`(productServiceClient.getProductById(100L)).thenReturn(product(categoryId = 5L))
+        `when`(productServiceClient.getAllCategories()).thenThrow(ProductServiceUnavailableException("down"))
+        `when`(catalogEntryRepository.findById(100L)).thenReturn(Optional.of(existing))
+        `when`(catalogEntryRepository.save(existing)).thenReturn(existing)
+
+        val result = catalogService.syncFromProductService(100L)
+
+        assertEquals("Electronics", result.categoryName)
+    }
+
+    @Test
+    fun `a failed categories lookup cannot keep a name that belongs to another category`() {
+        val existing = sampleEntry() // category 5, "Electronics"
+        `when`(productServiceClient.getProductById(100L)).thenReturn(product(categoryId = 6L)) // moved to category 6
+        `when`(productServiceClient.getAllCategories()).thenThrow(ProductServiceUnavailableException("down"))
+        `when`(catalogEntryRepository.findById(100L)).thenReturn(Optional.of(existing))
+        `when`(catalogEntryRepository.save(existing)).thenReturn(existing)
+
+        val result = catalogService.syncFromProductService(100L)
+
+        assertEquals(6L, result.categoryId)
+        assertNull(result.categoryName, "the stored name was category 5's")
+    }
+
+    @Test
+    fun `a categories lookup that works replaces the stored name, even with none`() {
+        val existing = sampleEntry() // category 5, "Electronics"
+        `when`(productServiceClient.getProductById(100L)).thenReturn(product(categoryId = 5L))
+        `when`(productServiceClient.getAllCategories()).thenReturn(emptyList()) // the category was deleted upstream
+        `when`(catalogEntryRepository.findById(100L)).thenReturn(Optional.of(existing))
+        `when`(catalogEntryRepository.save(existing)).thenReturn(existing)
+
+        assertNull(catalogService.syncFromProductService(100L).categoryName)
+    }
+
+    @Test
+    fun `a product without a category does not cost a categories call`() {
+        `when`(productServiceClient.getProductById(100L)).thenReturn(product(categoryId = null))
+        stubFreshInsert()
+
+        val result = catalogService.syncFromProductService(100L)
+
+        assertNull(result.categoryId)
+        assertNull(result.categoryName)
+        verify(productServiceClient, never()).getAllCategories()
+    }
+
+    @ParameterizedTest(name = "unusable product data: {0}")
+    @MethodSource("unusableProducts")
+    fun `data product-service should never send is refused with a 502 and writes nothing`(case: String, bad: ProductDTO) {
+        `when`(productServiceClient.getProductById(100L)).thenReturn(bad)
+
+        val failure = assertThrows<ProductServiceErrorException> { catalogService.syncFromProductService(100L) }
+
+        assertEquals("product-service returned unusable data for product 100", failure.message)
+        verifyNoInteractions(catalogEntryRepository)
+        verify(productServiceClient, never()).getAllCategories()
+    }
+
+    @Test
+    fun `a price with an absurd exponent is refused before anything tries to round it`() {
+        // 1E+999999999 is a valid BigDecimal; setScale(2) on it would try to build a billion-digit number.
+        val bomb = product().copy(price = BigDecimal("1E+999999999"))
+        `when`(productServiceClient.getProductById(100L)).thenReturn(bomb)
+
+        assertTimeoutPreemptively(java.time.Duration.ofSeconds(2)) {
+            assertThrows<ProductServiceErrorException> { catalogService.syncFromProductService(100L) }
+        }
     }
 
     @Test

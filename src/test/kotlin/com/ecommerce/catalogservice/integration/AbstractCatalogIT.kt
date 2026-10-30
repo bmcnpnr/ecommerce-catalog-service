@@ -1,6 +1,7 @@
 package com.ecommerce.catalogservice.integration
 
 import com.ecommerce.catalogservice.repository.CatalogEntryRepository
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
 import com.github.tomakehurst.wiremock.WireMockServer
 import com.github.tomakehurst.wiremock.client.WireMock.aResponse
 import com.github.tomakehurst.wiremock.client.WireMock.get
@@ -96,7 +97,9 @@ abstract class AbstractCatalogIT {
             private set
 
         private fun startProductService() =
-            WireMockServer(options().port(productServicePort)).apply { start() }
+            // WireMock serves with 10 threads by default; the tests that put two dozen calls in flight at once need more,
+            // or the stub itself would queue them and the delays would add up.
+            WireMockServer(options().port(productServicePort).containerThreads(50)).apply { start() }
 
         /** Simulates product-service being down (connection refused) for the duration of [block]. */
         fun <T> withProductServiceDown(block: () -> T): T {
@@ -124,10 +127,16 @@ abstract class AbstractCatalogIT {
     @Autowired
     protected lateinit var repository: CatalogEntryRepository
 
+    @Autowired
+    private lateinit var circuitBreakers: CircuitBreakerRegistry
+
     @BeforeEach
     fun resetState() {
         repository.deleteAll()
         productService.resetAll()
+        // The Feign breaker is shared by every test in a cached context: failures one test provokes on purpose must
+        // not leave it open for the next.
+        circuitBreakers.circuitBreaker("product-service").reset()
     }
 
     class Response(val status: Int, val headers: java.net.http.HttpHeaders, val body: String) {

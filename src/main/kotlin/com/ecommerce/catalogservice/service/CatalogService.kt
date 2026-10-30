@@ -2,8 +2,11 @@ package com.ecommerce.catalogservice.service
 
 import com.ecommerce.catalogservice.client.ProductServiceClient
 import com.ecommerce.catalogservice.dto.CatalogEntryDTO
+import com.ecommerce.catalogservice.dto.CategoryDTO
+import com.ecommerce.catalogservice.dto.ProductDTO
 import com.ecommerce.catalogservice.dto.UpdateCatalogEntryRequest
 import com.ecommerce.catalogservice.exception.CatalogEntryNotFoundException
+import com.ecommerce.catalogservice.exception.ProductServiceErrorException
 import com.ecommerce.catalogservice.model.CatalogEntry
 import com.ecommerce.catalogservice.model.StockStatus
 import com.ecommerce.catalogservice.repository.CatalogEntryRepository
@@ -48,12 +51,14 @@ class CatalogService(
             .map { it.toDTO() }
     }
 
-    fun getCatalogByCategory(categoryId: Long): List<CatalogEntryDTO> {
-        return catalogEntryRepository.findByCategoryId(categoryId).map { it.toDTO() }
+    /** One page of a category's entries (the controller caps the page size): a category can hold any number. */
+    fun getCatalogByCategory(categoryId: Long, pageable: Pageable): List<CatalogEntryDTO> {
+        return catalogEntryRepository.findByCategoryId(categoryId, pageable).map { it.toDTO() }
     }
 
-    fun getFeaturedProducts(): List<CatalogEntryDTO> {
-        return catalogEntryRepository.findByFeaturedTrue().map { it.toDTO() }
+    /** One page of the featured entries (the controller caps the page size). */
+    fun getFeaturedProducts(pageable: Pageable): List<CatalogEntryDTO> {
+        return catalogEntryRepository.findByFeaturedTrue(pageable).map { it.toDTO() }
     }
 
     fun getCatalogEntryByProductId(productId: Long): CatalogEntryDTO {
@@ -68,8 +73,13 @@ class CatalogService(
 
     fun syncFromProductService(productId: Long): CatalogEntryDTO {
         val product = productServiceClient.getProductById(productId)
-        val categories = try { productServiceClient.getAllCategories() } catch (e: Exception) { emptyList() }
-        val category = categories.find { it.id == product.categoryId }
+        requireUsable(product, productId)
+        // The category name is a nicety: when the lookup fails the sync still succeeds. `null` means "could not
+        // look it up" (not "there are no categories"), so the name already stored is kept instead of blanked.
+        val categories: List<CategoryDTO>? =
+            if (product.categoryId == null) emptyList()
+            else try { productServiceClient.getAllCategories() } catch (e: Exception) { log.debug("Category lookup failed: {}", e.javaClass.simpleName); null }
+        val categoryName = categories?.find { it.id == product.categoryId }?.name
 
         val stockStatus = when {
             product.stockQuantity <= 0 -> StockStatus.OUT_OF_STOCK
@@ -84,13 +94,14 @@ class CatalogService(
             val existing = catalogEntryRepository.findById(productId)
             val entry = if (existing.isPresent) {
                 val e = existing.get()
+                val storedName = if (e.categoryId == product.categoryId) e.categoryName else null
                 e.productSku = product.sku
                 e.productName = product.name
                 e.description = product.description
                 e.price = product.price.toCatalogPrice()
                 e.brand = product.brand
                 e.categoryId = product.categoryId
-                e.categoryName = category?.name
+                e.categoryName = if (categories == null) storedName else categoryName
                 e.stockStatus = stockStatus
                 e.updatedAt = CatalogEntry.now()
                 e
@@ -103,7 +114,7 @@ class CatalogService(
                     price = product.price.toCatalogPrice(),
                     brand = product.brand,
                     categoryId = product.categoryId,
-                    categoryName = category?.name,
+                    categoryName = categoryName,
                     stockStatus = stockStatus
                 )
             }
@@ -112,6 +123,21 @@ class CatalogService(
 
         log.info("Synced catalog entry for product {}", productId)
         return saved.toDTO()
+    }
+
+    /**
+     * product-service is trusted to be a product-service, not to be right: an answer for another product, an empty
+     * name, a price that is not positive or has absurd digits (`1E+999999999` parses as a valid BigDecimal and
+     * `setScale` on it would try to build a billion-digit number) is refused with a 502 instead of being written
+     * into the read model or taking a request thread down.
+     */
+    private fun requireUsable(product: ProductDTO, requestedId: Long) {
+        val integerDigits = product.price.precision() - product.price.scale()
+        if (product.id != requestedId || product.sku.isBlank() || product.name.isBlank() ||
+            product.price.signum() <= 0 || integerDigits > MAX_PRICE_INTEGER_DIGITS || product.price.scale() > MAX_PRICE_SCALE
+        ) {
+            throw ProductServiceErrorException("product-service returned unusable data for product $requestedId", 200)
+        }
     }
 
     /**
@@ -169,6 +195,8 @@ class CatalogService(
 
     private companion object {
         const val RETRY_ATTEMPTS = 5
+        const val MAX_PRICE_INTEGER_DIGITS = 15  // what the PATCH accepts, and what product-service stores
+        const val MAX_PRICE_SCALE = 10
     }
 
     private fun CatalogEntry.toDTO() = CatalogEntryDTO(

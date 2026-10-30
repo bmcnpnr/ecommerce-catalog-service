@@ -4,6 +4,7 @@ import com.ecommerce.catalogservice.model.CatalogEntry
 import com.ecommerce.catalogservice.model.StockStatus
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
+import org.springframework.data.mongodb.repository.Meta
 import org.springframework.data.mongodb.repository.MongoRepository
 import org.springframework.stereotype.Repository
 
@@ -17,6 +18,10 @@ interface CatalogEntryRepository : MongoRepository<CatalogEntry, Long>, CatalogE
     fun findByFeaturedTrue(): List<CatalogEntry>
     fun findByStockStatus(stockStatus: StockStatus): List<CatalogEntry>
 
+    /** What the endpoints use: a category or the featured set can hold any number of entries, so only ever one page. */
+    fun findByCategoryId(categoryId: Long, pageable: Pageable): List<CatalogEntry>
+    fun findByFeaturedTrue(pageable: Pageable): List<CatalogEntry>
+
     /**
      * Case-insensitive substring match, translated by Spring Data into a
      * `{ productName: { $regex: <quoted query>, $options: "i" } }` filter. Like
@@ -24,5 +29,6 @@ interface CatalogEntryRepository : MongoRepository<CatalogEntry, Long>, CatalogE
      * collection scan and is fine at catalog sizes. It is the fallback behind
      * [searchByText] for partial-word queries the text index cannot serve.
      */
+    @Meta(maxExecutionTimeMs = CatalogEntryRepositoryCustom.QUERY_TIME_LIMIT_MS)
     fun findByProductNameContainingIgnoreCase(name: String, pageable: Pageable): Page<CatalogEntry>
 }

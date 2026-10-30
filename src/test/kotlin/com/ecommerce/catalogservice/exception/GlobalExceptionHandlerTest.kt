@@ -1,9 +1,14 @@
 package com.ecommerce.catalogservice.exception
 
 import com.ecommerce.catalogservice.dto.UpdateCatalogEntryRequest
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
+import org.slf4j.LoggerFactory
 import org.junit.jupiter.api.Test
 import org.slf4j.MDC
 import org.springframework.core.MethodParameter
@@ -117,5 +122,123 @@ class GlobalExceptionHandlerTest {
         val response = handler.handleNotFound(CatalogEntryNotFoundException("gone"), request)
 
         assertNull(response.body!!.correlationId)
+    }
+
+    // ───────────────────────── dependency failures (L4) and log volume (L3, L6) ─────────────────────────
+
+    private val logs = ListAppender<ILoggingEvent>()
+    private val handlerLogger = LoggerFactory.getLogger(GlobalExceptionHandler::class.java) as Logger
+
+    @BeforeEach
+    fun captureHandlerLog() {
+        logs.start()
+        handlerLogger.addAppender(logs)
+    }
+
+    @AfterEach
+    fun releaseHandlerLog() {
+        handlerLogger.detachAppender(logs)
+        logs.stop()
+    }
+
+    @Test
+    fun `product-service giving no answer is a 503 with a fixed message`() {
+        val response = handler.handleProductServiceUnavailable(ProductServiceUnavailableException("Product service unavailable"), request)
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.statusCode)
+        val body = response.body!!
+        assertEquals(503, body.status)
+        assertEquals("Service Unavailable", body.error)
+        assertEquals("Service temporarily unavailable", body.message)
+        assertEquals("corr-123", body.correlationId)
+    }
+
+    @Test
+    fun `product-service answering with something unusable is a 502 with a fixed message`() {
+        val response = handler.handleProductServiceError(ProductServiceErrorException("product-service answered with status 500", 500), request)
+
+        assertEquals(HttpStatus.BAD_GATEWAY, response.statusCode)
+        assertEquals("Upstream service error", response.body!!.message)
+        assertFalse(response.body!!.message.contains("500"))
+    }
+
+    @Test
+    fun `a database that does not answer is a 503 whichever way the driver or Spring Data report it`() {
+        val failures = listOf(
+            com.mongodb.MongoTimeoutException("Timed out while waiting for a server that matches ReadPreference primary"),
+            org.springframework.dao.DataAccessResourceFailureException("catalogdb:27017: Connection refused"),
+            org.springframework.dao.QueryTimeoutException("operation exceeded time limit"),
+            org.springframework.data.mongodb.UncategorizedMongoDbException("wrapped", RuntimeException("x", com.mongodb.MongoTimeoutException("Timed out")))
+        )
+
+        failures.forEach { failure ->
+            val response = handler.handleGeneric(failure, request)
+
+            assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.statusCode, failure.toString())
+            assertEquals("Service temporarily unavailable", response.body!!.message)
+            assertFalse(response.body!!.message.contains("catalogdb"))
+        }
+    }
+
+    @Test
+    fun `a write conflict is still a 409, not a 503`() {
+        val response = handler.handleConcurrentModification(DuplicateKeyException("E11000 duplicate key"), request)
+
+        assertEquals(HttpStatus.CONFLICT, response.statusCode)
+    }
+
+    /** Only for the flood test below, so its throttle key (the exception class) is not shared with other tests. */
+    private class FloodedMongo : org.springframework.dao.DataAccessResourceFailureException("catalogdb is down")
+
+    @Test
+    fun `a dead database under load logs one line without a stack trace, not one line per request`() {
+        repeat(300) { assertEquals(HttpStatus.SERVICE_UNAVAILABLE, handler.handleGeneric(FloodedMongo(), request).statusCode) }
+
+        assertEquals(1, logs.list.size, "300 failed requests, one log line")
+        val line = logs.list.single()
+        assertEquals(Level.WARN, line.level)
+        assertNull(line.throwableProxy, "no stack trace for an unavailable dependency")
+        assertTrue(line.formattedMessage.contains("Dependency unavailable"))
+        assertTrue(line.formattedMessage.contains("FloodedMongo"))
+    }
+
+    /** Only for the flood test below. */
+    private class FloodedProductService : ProductServiceUnavailableException("Product service unavailable")
+
+    @Test
+    fun `product-service down under load logs one line without a stack trace, not one line per request`() {
+        repeat(300) { handler.handleProductServiceUnavailable(FloodedProductService(), request) }
+
+        assertEquals(1, logs.list.size)
+        assertEquals(Level.WARN, logs.list.single().level)
+        assertNull(logs.list.single().throwableProxy)
+    }
+
+    @Test
+    fun `a bug on a hot path logs one stack trace, not one per request`() {
+        repeat(300) {
+            val response = handler.handleGeneric(IllegalStateException("bug on the hot path"), request)
+            assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.statusCode)
+        }
+
+        assertEquals(1, logs.list.size)
+        val line = logs.list.single()
+        assertEquals(Level.ERROR, line.level)
+        assertNotNull(line.throwableProxy, "the one logged occurrence keeps its stack trace")
+        assertEquals("bug on the hot path", line.throwableProxy.message)
+    }
+
+    @Test
+    fun `anonymous clients asking for unknown ids cannot flood the log`() {
+        repeat(300) { handler.handleNotFound(CatalogEntryNotFoundException("Catalog entry not found for product $it"), request) }
+
+        assertTrue(logs.list.size <= 1, "300 requests for ids that do not exist, at most one warning (it was one each)")
+    }
+
+    @Test
+    fun `a storm of lost write races cannot flood the log either`() {
+        repeat(300) { handler.handleConcurrentModification(OptimisticLockingFailureException("version moved"), request) }
+
+        assertTrue(logs.list.size <= 1)
     }
 }

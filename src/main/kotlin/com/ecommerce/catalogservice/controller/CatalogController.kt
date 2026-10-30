@@ -13,6 +13,7 @@ import jakarta.validation.constraints.Max
 import jakarta.validation.constraints.Min
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.PageRequest
+import org.springframework.data.domain.Sort
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 
@@ -32,7 +33,7 @@ class CatalogController(private val catalogService: CatalogService) {
         @RequestParam(defaultValue = "0") @Min(0) page: Int,
         @RequestParam(defaultValue = "20") @Min(1) @Max(100) size: Int
     ): ResponseEntity<Page<CatalogEntryDTO>> {
-        if (q.indexOf('\u0000') >= 0) throw InvalidRequestException("Invalid value for parameter 'q'")
+        if (q.indexOf('\u0000') >= 0 || q.length > MAX_QUERY_LENGTH) throw InvalidRequestException("Invalid value for parameter 'q'")
         return ResponseEntity.ok(catalogService.searchCatalog(q, pageRequest(page, size)))
     }
 
@@ -46,15 +47,22 @@ class CatalogController(private val catalogService: CatalogService) {
     }
 
     @GetMapping("/category/{categoryId}")
-    @Operation(summary = "Get catalog entries by category")
-    fun getByCategory(@PathVariable categoryId: Long): ResponseEntity<List<CatalogEntryDTO>> {
-        return ResponseEntity.ok(catalogService.getCatalogByCategory(categoryId))
+    @Operation(summary = "Get catalog entries by category (first page of at most 100; use page and size for more)")
+    fun getByCategory(
+        @PathVariable categoryId: Long,
+        @RequestParam(defaultValue = "0") @Min(0) page: Int,
+        @RequestParam(defaultValue = "100") @Min(1) @Max(100) size: Int
+    ): ResponseEntity<List<CatalogEntryDTO>> {
+        return ResponseEntity.ok(catalogService.getCatalogByCategory(categoryId, pageRequest(page, size)))
     }
 
     @GetMapping("/featured")
-    @Operation(summary = "Get featured products")
-    fun getFeatured(): ResponseEntity<List<CatalogEntryDTO>> {
-        return ResponseEntity.ok(catalogService.getFeaturedProducts())
+    @Operation(summary = "Get featured products (first page of at most 100; use page and size for more)")
+    fun getFeatured(
+        @RequestParam(defaultValue = "0") @Min(0) page: Int,
+        @RequestParam(defaultValue = "100") @Min(1) @Max(100) size: Int
+    ): ResponseEntity<List<CatalogEntryDTO>> {
+        return ResponseEntity.ok(catalogService.getFeaturedProducts(pageRequest(page, size)))
     }
 
     @GetMapping("/product/{productId}")
@@ -93,10 +101,15 @@ class CatalogController(private val catalogService: CatalogService) {
     private fun pageRequest(page: Int, size: Int): PageRequest {
         if (page < 0 || size < 1 || size > MAX_PAGE_SIZE) throw InvalidRequestException("Page size must be between 1 and $MAX_PAGE_SIZE")
         if (page.toLong() * size > Int.MAX_VALUE) throw InvalidRequestException("Page out of range")
-        return PageRequest.of(page, size)
+        // Sorted by the product id so that page boundaries are stable (without a sort MongoDB may return the same
+        // document on two pages, or skip one); `_id` is indexed, so this costs nothing.
+        return PageRequest.of(page, size, Sort.by("productId"))
     }
 
     private companion object {
         const val MAX_PAGE_SIZE = 100
+
+        /** Product names are at most 200 characters, so a longer search text can only cost a scan. */
+        const val MAX_QUERY_LENGTH = 200
     }
 }
